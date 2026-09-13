@@ -52,6 +52,14 @@ def discover_all_sources(storage_base: Path, exclude_hashes: set[str]) -> list[P
     Find every workspaceStorage/<hash> folder that has a state.vscdb,
     excluding the target(s) so we never merge a workspace into itself.
     """
+    if not storage_base.exists():
+        raise RuntimeError(
+            f"--storage-base does not exist: {storage_base}\n"
+            "Check the path, or omit --storage-base to use the default VS Code location."
+        )
+    if not storage_base.is_dir():
+        raise RuntimeError(f"--storage-base is not a directory: {storage_base}")
+
     sources = []
     for d in sorted(storage_base.iterdir()):
         if not d.is_dir() or d.name in exclude_hashes:

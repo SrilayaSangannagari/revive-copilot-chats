@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .constants import CHAT_INDEX_KEY, FOLDERS_TO_MERGE
-from .dates import filter_entries_by_date
+from .dates import filter_entries_by_date, count_missing_timestamps
 
 
 # ---------- state.vscdb index merge ----------
@@ -17,16 +17,24 @@ from .dates import filter_entries_by_date
 def read_chat_index(db_path: Path) -> dict:
     if not db_path.exists():
         return {"version": 1, "entries": {}}
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT value FROM ItemTable WHERE key = ?", (CHAT_INDEX_KEY,))
-        row = cur.fetchone()
-        if not row:
-            return {"version": 1, "entries": {}}
-        return json.loads(row[0])
-    finally:
-        conn.close()
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM ItemTable WHERE key = ?", (CHAT_INDEX_KEY,))
+            row = cur.fetchone()
+            if not row:
+                return {"version": 1, "entries": {}}
+            return json.loads(row[0])
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as e:
+        raise sqlite3.DatabaseError(f"{db_path} appears corrupted or is not a valid SQLite file: {e}") from e
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"{db_path}: chat index value is not valid JSON ({e}). "
+            "The extension's storage format may have changed."
+        ) from e
 
 
 def merge_indexes(target_index: dict, source_index: dict, source_label: str) -> dict:
@@ -85,24 +93,51 @@ def write_chat_index(db_path: Path, merged_index: dict):
 # ---------- folder content merge ----------
 
 def file_hash(path: Path) -> str:
+    """Full SHA-256 of the file's bytes, used only to skip rewriting a file
+    that is already byte-identical."""
     h = hashlib.sha256()
     h.update(path.read_bytes())
-    return h.hexdigest()[:8]
+    return h.hexdigest()
+
+
+def session_id_in_path(rel: Path, session_ids: set[str]) -> bool:
+    """
+    Whether a session-storage file belongs to one of session_ids.
+
+    VS Code identifies a session's files two different ways, so we accept
+    either. As the filename stem:
+
+        chatSessions/<id>.json
+        GitHub.copilot-chat/transcripts/<id>.jsonl
+
+    ...or as a directory component, with arbitrary names beneath it:
+
+        chatEditingSessions/<id>/state.json
+        GitHub.copilot-chat/debug-logs/<id>/models.json
+        GitHub.copilot-chat/chat-session-resources/<id>/call_.../content.txt
+
+    Matching only the stem (the earlier behaviour) silently copied nothing
+    from the nested layouts, since their stems are names like "state".
+    """
+    if rel.stem in session_ids:
+        return True
+    return any(part in session_ids for part in rel.parts)
 
 
 def merge_folder(
     source_dir: Path, target_dir: Path, allowed_session_ids: set[str] | None = None
 ) -> int:
     """
-    Copy every file from source_dir into target_dir. If a same-named file
-    already exists and differs in content, rename the incoming file with
-    a short content-hash suffix instead of overwriting. Returns count of
-    files copied (new or renamed).
+    Copy every file from source_dir into target_dir, replacing any
+    same-named file already there — the source is treated as the source of
+    truth. Files that are already byte-identical are left alone. Returns
+    count of files written.
 
-    If allowed_session_ids is given, only files whose stem (filename
-    without extension) is in that set are copied — this keeps chatSessions/
-    and chatEditingSessions/ file copies in sync with a date-filtered index,
-    so you never end up with a file on disk whose session wasn't included.
+    If allowed_session_ids is given, a file is copied only when one of those
+    session ids appears in its relative path (see session_id_in_path). Files
+    belonging to no session at all — codebase indexes like
+    workspace-chunks.db, or memory-tool/ — are therefore skipped, since no
+    date range can vouch for them. Pass None to copy everything.
     """
     if not source_dir.exists():
         return 0
@@ -113,20 +148,20 @@ def merge_folder(
     for src_file in source_dir.rglob("*"):
         if src_file.is_dir():
             continue
-        if allowed_session_ids is not None and src_file.stem not in allowed_session_ids:
-            continue
         rel = src_file.relative_to(source_dir)
+        if allowed_session_ids is not None and not session_id_in_path(
+            rel, allowed_session_ids
+        ):
+            continue
         dest = target_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        if dest.exists():
-            if file_hash(dest) == file_hash(src_file):
-                continue  # identical, skip
-            # differing content under same name: disambiguate
-            suffix = file_hash(src_file)
-            dest = dest.with_name(f"{dest.stem}.{suffix}{dest.suffix}")
-            if dest.exists():
-                continue
+        # The source workspace is authoritative: an existing file in the
+        # target is replaced under the same name. That way a chat continued in
+        # its original workspace is picked up by the next recovery, instead of
+        # staying frozen at whatever the first recovery copied.
+        if dest.exists() and file_hash(dest) == file_hash(src_file):
+            continue  # already identical, nothing to write
 
         shutil.copy2(src_file, dest)
         copied += 1
@@ -149,7 +184,9 @@ def revive(
     target_index = read_chat_index(target_db)
     print(f"Target starts with {len(target_index.get('entries', {}))} indexed session(s).")
 
-    if date_from_ms is not None or date_to_ms is not None:
+    date_filter_active = date_from_ms is not None or date_to_ms is not None
+
+    if date_filter_active:
         print(
             f"Date filter active: "
             f"{datetime.fromtimestamp(date_from_ms/1000).date() if date_from_ms else 'any'} "
@@ -182,8 +219,14 @@ def revive(
         n_kept = len(filtered_entries)
 
         print(f"\nSource: {src_dir}")
-        if date_from_ms is not None or date_to_ms is not None:
+        if date_filter_active:
             print(f"  Index: {n_kept}/{n_total} session(s) within date range")
+            missing = count_missing_timestamps(raw_entries)
+            if missing:
+                print(
+                    f"  NOTE: {missing} session(s) have no timestamp at all and were "
+                    "excluded by the date filter — re-run without --from/--to to include them."
+                )
         else:
             print(f"  Index: merging {n_kept} session(s)")
 
@@ -193,25 +236,20 @@ def revive(
 
         filtered_src_index = {"version": src_index.get("version", 1), "entries": filtered_entries}
         target_index = merge_indexes(target_index, filtered_src_index, source_label=str(src_dir))
-        allowed_ids = set(filtered_entries.keys())
+
+        # With no date range, copy each folder wholesale. With one, copy only
+        # the files belonging to the sessions whose lastMessageDate landed in
+        # range, so the files and the index always agree.
+        allowed_ids = set(filtered_entries) if date_filter_active else None
 
         for folder_name in FOLDERS_TO_MERGE:
             folder_path = src_dir / folder_name
             if not folder_path.exists():
                 print(f"  {folder_name}/: NOT FOUND at {folder_path}")
                 continue
-
-            if folder_name == "GitHub.copilot-chat" and (
-                date_from_ms is not None or date_to_ms is not None
-            ):
-                # Not session-scoped, so it can't be attributed to a date range.
-                # Skip it when a date filter is active to avoid pulling in
-                # unrelated extension state.
-                print(f"  {folder_name}/: skipped (not session-scoped, date filter active)")
-                continue
-
-            id_filter = allowed_ids if folder_name in ("chatSessions", "chatEditingSessions") else None
-            copied = merge_folder(folder_path, target_dir / folder_name, allowed_session_ids=id_filter)
+            copied = merge_folder(
+                folder_path, target_dir / folder_name, allowed_session_ids=allowed_ids
+            )
             print(f"  {folder_name}/: copied {copied} file(s)")
 
     write_chat_index(target_db, target_index)

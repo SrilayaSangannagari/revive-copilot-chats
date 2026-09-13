@@ -17,7 +17,10 @@ def backup_target_state_db(target_db: Path) -> Path | None:
         return None  # brand-new workspace, nothing to back up yet
 
     backup_path = target_db.with_name("state.vscdb.backup")
-    shutil.copy2(target_db, backup_path)
+    try:
+        shutil.copy2(target_db, backup_path)
+    except OSError as e:
+        raise OSError(f"Failed to back up {target_db} to {backup_path}: {e}") from e
     print(
         f"Backed up target state.vscdb -> {backup_path} "
         f"({backup_path.stat().st_size / 1024:.1f} KB)\n"

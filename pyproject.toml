@@ -5,11 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "revive-copilot-chats"
 version = "0.1.0"
-description = "Recover orphaned GitHub Copilot Chat sessions from VS Code workspaceStorage."
+description = "Recovers GitHub Copilot Chat sessions trapped in orphaned VS Code workspaceStorage folders by selectively merging the chat index and transcripts into a live workspace."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Your Name" }]
+authors = [{ name = "Srilaya S", email = "srilayasangannagari@gmail.com"}]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [project.scripts]
 revive-chats = "revive_copilot_chats.cli:main"

@@ -15,7 +15,12 @@ def parse_date_to_ms(date_str: str, end_of_day: bool = False) -> int:
 
 
 def filter_entries_by_date(entries: dict, from_ms: int | None, to_ms: int | None) -> dict:
-    """Keep only session entries whose lastMessageDate falls within [from_ms, to_ms]."""
+    """Keep only session entries whose lastMessageDate falls within [from_ms, to_ms].
+    Entries missing lastMessageDate entirely are treated as timestamp 0, so
+    they're excluded whenever --from is set (0 is always earlier than any
+    real --from date) — call count_missing_timestamps() separately if you
+    want to warn the user about this instead of silently dropping them.
+    """
     if from_ms is None and to_ms is None:
         return dict(entries)
     filtered = {}
@@ -27,3 +32,9 @@ def filter_entries_by_date(entries: dict, from_ms: int | None, to_ms: int | None
             continue
         filtered[session_id] = entry
     return filtered
+
+
+def count_missing_timestamps(entries: dict) -> int:
+    """How many entries have no lastMessageDate at all — useful to warn the
+    user that a date filter may be silently excluding them."""
+    return sum(1 for e in entries.values() if "lastMessageDate" not in e)
