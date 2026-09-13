@@ -1,0 +1,14 @@
+fileignoreconfig:
+- filename: src/revive_copilot_chats/backup.py
+  checksum: 6b6b68939f72fb8c3d46c6fd0791ee07d3f949354e601903070cb2af2a07486d
+- filename: tests/test_dates_discovery_backup.py
+  checksum: 36127a79b614532366e18818b1742a7349dac27c7ecf24c2512901563278ec87
+- filename: src/revive_copilot_chats/constants.py
+  checksum: a91ef6f8d4006a5daf92a89408d28fcff9a367236e3c6cd4f6a08c51a18e79cc
+- filename: src/revive_copilot_chats/discovery.py
+  checksum: 2ad368fd9a69c4bc8ea5d66e35f05f88dde295dd7218521827931a90622da436
+- filename: tests/test_merge_index.py
+  checksum: a93674d1cc611dc950df3cece2a6d32f9d8bf3363a028b5fde88f668b5c35d1d
+- filename: src/revive_copilot_chats/merge.py
+  checksum: fee3ddff9860e014a078432cbaaf64a892113a1ac9edfce729c68403b2ddfc31
+version: "1.0"
